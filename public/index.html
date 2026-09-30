@@ -1,0 +1,311 @@
+<!DOCTYPE html>
+<html lang="ko">
+<head>
+  <meta charset="UTF-8">
+  <meta name="viewport" content="width=device-width, initial-scale=1.0">
+  <title>온라인 배틀 게임</title>
+  <script src="https://cdn.socket.io/4.5.4/socket.io.min.js"></script>
+  <style>
+    * { margin: 0; padding: 0; box-sizing: border-box; }
+    body { font-family: 'Courier New', monospace; background: #0a0e27; color: #fff; display: flex; justify-content: center; align-items: center; min-height: 100vh; padding: 20px; }
+    #gameContainer { display: flex; flex-direction: column; gap: 20px; align-items: center; width: 100%; max-width: 600px; }
+    #matchmaking { background: #1a1f3a; padding: 20px; border-radius: 8px; border: 2px solid #00ff00; text-align: center; width: 100%; }
+    #matchmaking h1 { margin-bottom: 15px; color: #00ff00; }
+    #matchmaking input { padding: 12px; font-size: 14px; width: 100%; margin-bottom: 10px; background: #0a0e27; color: #00ff00; border: 2px solid #00ff00; border-radius: 4px; }
+    #matchmaking button { padding: 12px 30px; background: #00ff00; color: #000; border: none; border-radius: 4px; cursor: pointer; font-weight: bold; font-size: 16px; width: 100%; }
+    #matchmaking button:hover { background: #00cc00; }
+    canvas { border: 3px solid #00ff00; background: linear-gradient(180deg, #001a4d 0%, #004d99 100%); image-rendering: pixelated; }
+    #gameUI { display: none; width: 100%; flex-direction: column; gap: 15px; }
+    #statsContainer { display: flex; gap: 40px; justify-content: center; flex-wrap: wrap; }
+    .playerStats { background: #1a1f3a; padding: 15px; border-radius: 8px; border: 2px solid #00ff00; min-width: 180px; }
+    .playerStats h3 { margin-bottom: 10px; color: #00ff00; }
+    .statRow { display: flex; justify-content: space-between; margin-bottom: 8px; font-size: 12px; }
+    .statBar { width: 100%; height: 15px; background: #0a0e27; border: 1px solid #00ff00; border-radius: 3px; overflow: hidden; }
+    .statFill { height: 100%; transition: width 0.1s; }
+    .hpFill { background: #ff0000; }
+    .mpFill { background: #0066ff; }
+    .ultFill { background: #ffdd00; }
+    #status { text-align: center; padding: 12px; background: #1a1f3a; border: 2px solid #00ff00; border-radius: 4px; color: #00ff00; }
+    #controls { background: #1a1f3a; padding: 15px; border-radius: 8px; border: 1px solid #666; font-size: 11px; text-align: center; color: #aaa; }
+    .gameOverlay { position: fixed; top: 0; left: 0; right: 0; bottom: 0; background: rgba(10, 14, 39, 0.95); display: none; z-index: 1000; flex-direction: column; justify-content: center; align-items: center; }
+    .gameOverlay.active { display: flex; }
+    .gameOverlay-content { background: #1a1f3a; padding: 40px; border-radius: 8px; border: 3px solid #00ff00; text-align: center; }
+    .gameOverlay h2 { font-size: 32px; margin-bottom: 20px; color: #00ff00; }
+    .gameOverlay button { padding: 12px 30px; background: #00ff00; color: #000; border: none; border-radius: 4px; cursor: pointer; font-weight: bold; width: 100%; }
+  </style>
+</head>
+<body>
+  <div id="gameOverlay" class="gameOverlay">
+    <div class="gameOverlay-content">
+      <h2>게임 끝</h2>
+      <p id="gameOverlayMessage" style="margin-bottom: 20px; color: #aaa;"></p>
+      <button onclick="location.reload()">게임 다시 시작</button>
+    </div>
+  </div>
+
+  <div id="gameContainer">
+    <div id="matchmaking">
+      <h1>⚔️ 온라인 배틀</h1>
+      <input type="text" id="roomInput" placeholder="방 ID" value="game-room-1">
+      <button onclick="joinGame()">🎮 입장</button>
+    </div>
+
+    <canvas id="gameCanvas" width="400" height="300"></canvas>
+
+    <div id="gameUI">
+      <div id="statsContainer">
+        <div class="playerStats">
+          <h3>🔵 나</h3>
+          <div class="statRow"><span>HP</span><span id="myHpText">100/100</span></div>
+          <div class="statBar"><div class="statFill hpFill" id="myHpBar" style="width:100%"></div></div>
+          <div class="statRow" style="margin-top: 10px;"><span>MP</span><span id="myMpText">100/100</span></div>
+          <div class="statBar"><div class="statFill mpFill" id="myMpBar" style="width:100%"></div></div>
+          <div class="statRow" style="margin-top: 10px;"><span>ULT</span><span id="myUltText">0/100</span></div>
+          <div class="statBar"><div class="statFill ultFill" id="myUltBar" style="width:0%"></div></div>
+        </div>
+
+        <div class="playerStats">
+          <h3>🔴 상대</h3>
+          <div class="statRow"><span>HP</span><span id="oppHpText">100/100</span></div>
+          <div class="statBar"><div class="statFill hpFill" id="oppHpBar" style="width:100%"></div></div>
+          <div class="statRow" style="margin-top: 10px;"><span>MP</span><span id="oppMpText">100/100</span></div>
+          <div class="statBar"><div class="statFill mpFill" id="oppMpBar" style="width:100%"></div></div>
+          <div class="statRow" style="margin-top: 10px;"><span>ULT</span><span id="oppUltText">0/100</span></div>
+          <div class="statBar"><div class="statFill ultFill" id="oppUltBar" style="width:0%"></div></div>
+        </div>
+      </div>
+
+      <div id="status">대기 중...</div>
+    </div>
+
+    <div id="controls">
+      <p>📌 방향키: 이동</p>
+      <p>⌨️ Z: 스킬1 (마나20) | X: 스킬2 (마나30) | C: 스킬3 (마나40)</p>
+      <p>⚡ V: 궁극기 | SPACE: 게임 시작</p>
+    </div>
+  </div>
+
+  <script>
+    const G = {
+      socket: null,
+      roomId: null,
+      playerNum: null,
+      gameStarted: false,
+      playing: false,
+      me: { x: 50, y: 150, hp: 100, maxHp: 100, mp: 100, maxMp: 100, ult: 0, maxUlt: 100 },
+      opp: { x: 350, y: 150, hp: 100, maxHp: 100, mp: 100, maxMp: 100, ult: 0, maxUlt: 100 },
+      projectiles: [],
+      keys: {},
+      lastMoveTime: 0,
+      lastCastTime: {}
+    };
+
+    const canvas = document.getElementById('gameCanvas');
+    const ctx = canvas.getContext('2d');
+
+    function updateStatus(msg) {
+      document.getElementById('status').textContent = msg;
+    }
+
+    function updateUI() {
+      document.getElementById('myHpText').textContent = Math.ceil(G.me.hp) + '/' + G.me.maxHp;
+      document.getElementById('myMpText').textContent = Math.ceil(G.me.mp) + '/' + G.me.maxMp;
+      document.getElementById('myUltText').textContent = Math.ceil(G.me.ult) + '/' + G.me.maxUlt;
+      document.getElementById('myHpBar').style.width = (G.me.hp / G.me.maxHp * 100) + '%';
+      document.getElementById('myMpBar').style.width = (G.me.mp / G.me.maxMp * 100) + '%';
+      document.getElementById('myUltBar').style.width = (G.me.ult / G.me.maxUlt * 100) + '%';
+
+      document.getElementById('oppHpText').textContent = Math.ceil(G.opp.hp) + '/' + G.opp.maxHp;
+      document.getElementById('oppMpText').textContent = Math.ceil(G.opp.mp) + '/' + G.opp.maxMp;
+      document.getElementById('oppUltText').textContent = Math.ceil(G.opp.ult) + '/' + G.opp.maxUlt;
+      document.getElementById('oppHpBar').style.width = (G.opp.hp / G.opp.maxHp * 100) + '%';
+      document.getElementById('oppMpBar').style.width = (G.opp.mp / G.opp.maxMp * 100) + '%';
+      document.getElementById('oppUltBar').style.width = (G.opp.ult / G.opp.maxUlt * 100) + '%';
+    }
+
+    function initSocket() {
+      G.socket = io();
+
+      G.socket.on('connect', () => {
+        updateStatus('✅ 서버 연결됨');
+      });
+
+      G.socket.on('player-joined', (data) => {
+        updateStatus('플레이어 ' + data.playerNum + ' 입장 (' + data.totalPlayers + '/2)');
+      });
+
+      G.socket.on('game-ready', () => {
+        updateStatus('✅ SPACE: 게임 시작');
+      });
+
+      G.socket.on('game-started', () => {
+        G.gameStarted = true;
+        G.playing = true;
+        document.getElementById('matchmaking').style.display = 'none';
+        canvas.style.display = 'block';
+        document.getElementById('gameUI').style.display = 'flex';
+        gameLoop();
+      });
+
+      G.socket.on('opponent-moved', (data) => {
+        G.opp.x = data.x;
+        G.opp.y = data.y;
+      });
+
+      G.socket.on('skill-cast', (data) => {
+        G.projectiles.push({
+          id: data.projectileId,
+          owner: data.playerNum,
+          x: data.x,
+          y: data.y,
+          vx: data.vx,
+          vy: data.vy,
+          alive: true
+        });
+      });
+
+      G.socket.on('damage-applied', (data) => {
+        if (data.targetPlayerNum === G.playerNum) {
+          G.me.hp = data.targetHp;
+          G.me.ult = data.targetUlt;
+        } else {
+          G.opp.hp = data.targetHp;
+          G.opp.ult = data.targetUlt;
+        }
+        updateUI();
+      });
+
+      G.socket.on('ultimate-used', (data) => {
+        if (data.playerNum === G.playerNum) {
+          G.me.ult = 0;
+        } else {
+          G.opp.ult = 0;
+        }
+        updateUI();
+      });
+
+      G.socket.on('player-died', (data) => {
+        G.playing = false;
+        let msg = data.playerNum === G.playerNum ? '패배!' : '승리!';
+        showGameOver(msg);
+      });
+
+      G.socket.on('game-state-sync', (data) => {
+        data.players.forEach(p => {
+          if (p.playerNum === G.playerNum) {
+            G.me.hp = p.hp;
+            G.me.mp = p.mp;
+            G.me.ult = p.ult;
+          } else {
+            G.opp.hp = p.hp;
+            G.opp.mp = p.mp;
+            G.opp.ult = p.ult;
+          }
+        });
+        updateUI();
+      });
+    }
+
+    function joinGame() {
+      const roomId = document.getElementById('roomInput').value.trim();
+      if (!roomId) {
+        updateStatus('방 ID를 입력하세요!');
+        return;
+      }
+
+      G.roomId = roomId;
+      G.socket.emit('join-room', { roomId }, (response) => {
+        if (response.success) {
+          G.playerNum = response.playerNum;
+          updateStatus('플레이어 ' + G.playerNum + ' - 상대 플레이어 대기 중...');
+        } else {
+          updateStatus('❌ ' + response.error);
+        }
+      });
+    }
+
+    function castSkill(skillType) {
+      if (!G.playing || G.me.hp <= 0) return;
+      const now = performance.now();
+      if (G.lastCastTime[skillType] && now - G.lastCastTime[skillType] < 300) return;
+      G.lastCastTime[skillType] = now;
+
+      G.socket.emit('cast-skill', { skillType, x: G.me.x, y: G.me.y, vx: 0, vy: -5 }, (response) => {
+        if (!response.success) updateStatus('스킬 사용 불가');
+      });
+    }
+
+    function useUltimate() {
+      if (!G.playing || G.me.ult < 100) return;
+      G.socket.emit('use-ultimate', { type: 'freeze' });
+    }
+
+    function draw() {
+      ctx.fillStyle = '#001a4d';
+      ctx.fillRect(0, 0, 400, 300);
+
+      ctx.fillStyle = '#0066cc';
+      ctx.fillRect(G.me.x - 10, G.me.y - 10, 20, 20);
+
+      ctx.fillStyle = '#cc0000';
+      ctx.fillRect(G.opp.x - 10, G.opp.y - 10, 20, 20);
+
+      G.projectiles = G.projectiles.filter(p => {
+        p.x += p.vx;
+        p.y += p.vy;
+        ctx.fillStyle = p.owner === 1 ? '#ffff00' : '#00ffff';
+        ctx.fillRect(p.x - 3, p.y - 3, 6, 6);
+        return p.y > 0 && p.y < 300;
+      });
+
+      const myDist = Math.hypot(G.me.x - G.opp.x, G.me.y - G.opp.y);
+      G.projectiles.forEach(p => {
+        if (p.owner === G.playerNum) {
+          const dist = Math.hypot(p.x - G.opp.x, p.y - G.opp.y);
+          if (dist < 20) {
+            G.socket.emit('damage-hit', { projectileId: p.id, hitCount: 1 });
+            p.alive = false;
+          }
+        }
+      });
+    }
+
+    function gameLoop() {
+      draw();
+      if (G.playing) {
+        const now = performance.now();
+        if (now - G.lastMoveTime > 50) {
+          G.lastMoveTime = now;
+          if (G.keys['ArrowUp']) G.me.y = Math.max(0, G.me.y - 3);
+          if (G.keys['ArrowDown']) G.me.y = Math.min(300, G.me.y + 3);
+          if (G.keys['ArrowLeft']) G.me.x = Math.max(0, G.me.x - 3);
+          if (G.keys['ArrowRight']) G.me.x = Math.min(400, G.me.x + 3);
+          G.socket.emit('player-move', { x: G.me.x, y: G.me.y });
+        }
+      }
+      requestAnimationFrame(gameLoop);
+    }
+
+    document.addEventListener('keydown', (e) => {
+      G.keys[e.key] = true;
+      if (e.key === ' ') { e.preventDefault(); G.socket.emit('game-start'); }
+      if (e.key === 'z') castSkill('skill1');
+      if (e.key === 'x') castSkill('skill2');
+      if (e.key === 'c') castSkill('skill3');
+      if (e.key === 'v') useUltimate();
+    });
+
+    document.addEventListener('keyup', (e) => {
+      G.keys[e.key] = false;
+    });
+
+    function showGameOver(msg) {
+      const overlay = document.getElementById('gameOverlay');
+      document.getElementById('gameOverlayMessage').textContent = msg;
+      overlay.classList.add('active');
+    }
+
+    initSocket();
+  </script>
+</body>
+</html>
